@@ -8,7 +8,8 @@ void app_main(void)
 {
   WifiInfo wifi_info;
   esp_err_t err;
-  err = esp_event_loop_create_default(); //(&event_loop_args, &wifi_info->event_loop);
+  
+  err = esp_event_loop_create_default();
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed to create event loop: %s", esp_err_to_name(err));
     return;
