@@ -32,7 +32,17 @@ static void smartconfig_config(void *param)
     return;
   }
 
-  vTaskDelete(NULL);
+  while (1) {
+    EventBits_t uxBits = xEventGroupWaitBits(wifi_info->event_group,
+                                             ESPTOUCH_DONE_BIT,
+                                             true, false, portMAX_DELAY);
+    if(uxBits & ESPTOUCH_DONE_BIT) {
+      ESP_LOGI(TAG, "smartconfig over");
+      esp_smartconfig_stop();
+      vTaskDelete(NULL);
+      return;
+    }
+  }
 }
   
 
@@ -84,7 +94,6 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
     }
   } else if (event_base == SC_EVENT && event_id == SC_EVENT_SEND_ACK_DONE) {
     xEventGroupSetBits(wifi_info->event_group, ESPTOUCH_DONE_BIT);
-    esp_smartconfig_stop();
   }
 }
 
