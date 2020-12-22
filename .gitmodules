@@ -1,0 +1,3 @@
+[submodule "certificate-collection"]
+	path = certificate-collection
+	url = git@github.com:troels/certificate-collection

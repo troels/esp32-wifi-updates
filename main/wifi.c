@@ -44,7 +44,18 @@ static void smartconfig_config(void *param)
     }
   }
 }
-  
+
+
+esp_err_t wait_for_connection(WifiInfo *wifi_info, TickType_t wait_time)
+{
+  EventBits_t uxBits = xEventGroupWaitBits(wifi_info->event_group,
+                                           CONNECTED_BIT,
+                                           true, false, wait_time);
+  if(uxBits & CONNECTED_BIT) {
+    return ESP_OK;
+  }
+  return ESP_FAIL;
+}
 
 static void wifi_event_handler(void* arg, esp_event_base_t event_base,
                                int32_t event_id, void* event_data)
@@ -66,6 +77,8 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
       return;
     }
     xEventGroupClearBits(wifi_info->event_group, CONNECTED_BIT);
+  } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
+    xEventGroupSetBits(wifi_info->event_group, CONNECTED_BIT);
   } else if (event_base == SC_EVENT && event_id == SC_EVENT_GOT_SSID_PSWD) {
     smartconfig_event_got_ssid_pswd_t *evt = (smartconfig_event_got_ssid_pswd_t *)event_data;
     wifi_config_t wifi_config = {0};
