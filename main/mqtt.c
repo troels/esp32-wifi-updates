@@ -17,7 +17,6 @@ esp_err_t create_mqtt_client(char *broker_url, esp_mqtt_client_handle_t *client)
   esp_mqtt_client_config_t mqtt_cfg = {
     .uri = broker_url,
     .use_global_ca_store = true,
-    .refresh_connection_after_ms = 1000,
     .client_cert_pem = (char*)mqtt_client_cert_pem_start,
     .client_cert_len = mqtt_client_cert_pem_end - mqtt_client_cert_pem_start,
     .client_key_pem = (char*)mqtt_client_key_start,

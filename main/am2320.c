@@ -78,7 +78,7 @@ wakeup(int i2c_num)
   i2c_master_start(cmd);
   i2c_master_write_byte(cmd, (AM2320_ADDRESS << 1) | I2C_MASTER_WRITE, ACK_CHECK_EN);
   i2c_master_stop(cmd);
-  int ret = i2c_master_cmd_begin(i2c_num, cmd, 1000 / portTICK_RATE_MS);
+  int ret = i2c_master_cmd_begin(i2c_num, cmd, pdMS_TO_TICKS(1000));
   i2c_cmd_link_delete(cmd);
   return ret;
 }
@@ -87,45 +87,58 @@ static esp_err_t
 perform_measurement(int i2c_num, am2320_measurement *out)
 {
   unsigned char buf[8];
-  i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-  i2c_master_start(cmd);
-  i2c_master_write_byte(cmd, (AM2320_ADDRESS << 1) | I2C_MASTER_WRITE, ACK_CHECK_EN);
-  i2c_master_write_byte(cmd, 0x03, ACK_CHECK_EN);
-  i2c_master_write_byte(cmd, 0x00, ACK_CHECK_EN);
-  i2c_master_write_byte(cmd, 0x04, ACK_CHECK_EN);
-  i2c_master_stop(cmd);
-  esp_err_t ret = i2c_master_cmd_begin(i2c_num, cmd, 1000 / portTICK_RATE_MS);
-  i2c_cmd_link_delete(cmd);
-  if (ret != ESP_OK) {
-    ESP_LOGE(TAG, "%s(%d): Failed to write to AM2320", __FUNCTION__, __LINE__);
-    return ret;
-  }
-  vTaskDelay(2 / portTICK_RATE_MS);
+  i2c_cmd_handle_t cmd;
+  esp_err_t err = ESP_OK;
+  int num_retries = 2048;
+  while (num_retries-- > 0) {
+    wakeup(i2c_num);
+    vTaskDelay(pdMS_TO_TICKS(2));
+
+    cmd = i2c_cmd_link_create();
+
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (AM2320_ADDRESS << 1) | I2C_MASTER_WRITE, ACK_CHECK_EN);
+    i2c_master_write_byte(cmd, 0x03, ACK_CHECK_EN);
+    i2c_master_write_byte(cmd, 0x00, ACK_CHECK_EN);
+    i2c_master_write_byte(cmd, 0x04, ACK_CHECK_EN);
+    i2c_master_stop(cmd);
+    err = i2c_master_cmd_begin(i2c_num, cmd, pdMS_TO_TICKS(10000));
+    i2c_cmd_link_delete(cmd);
+    if (err != ESP_OK) {
+      ESP_LOGD(TAG, "%s(%d): Failed to write to AM2320: %s", __FUNCTION__, __LINE__,
+               esp_err_to_name(err));
+      continue;
+    }
+    vTaskDelay(pdMS_TO_TICKS(2));
   
-  cmd = i2c_cmd_link_create();
-  i2c_master_start(cmd);
-  i2c_master_write_byte(cmd, (AM2320_ADDRESS << 1) | I2C_MASTER_READ, ACK_CHECK_EN);
-  i2c_master_read(cmd, buf, 8, I2C_MASTER_LAST_NACK);
-  i2c_master_stop(cmd);
-  ret = i2c_master_cmd_begin(i2c_num, cmd, 1000 / portTICK_RATE_MS);
-  i2c_cmd_link_delete(cmd);
-  if (ret != ESP_OK) {
-    ESP_LOGE(TAG, "%s(%d): Failed to read from AM2320", __FUNCTION__, __LINE__);
-    return ret;
-  }
+    cmd = i2c_cmd_link_create();
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (AM2320_ADDRESS << 1) | I2C_MASTER_READ, ACK_CHECK_EN);
+    i2c_master_read(cmd, buf, 8, I2C_MASTER_LAST_NACK);
+    i2c_master_stop(cmd);
+    err = i2c_master_cmd_begin(i2c_num, cmd, pdMS_TO_TICKS(10000));
+    i2c_cmd_link_delete(cmd);
+    if (err != ESP_OK) {
+      ESP_LOGD(TAG, "%s(%d): Failed to read from AM2320: %s", __FUNCTION__, __LINE__,
+               esp_err_to_name(err));
+      continue;
+    }
 
-  unsigned short crc = (((int)buf[7]) << 8) + ((int)buf[6]);
-  if (crc != crc16(buf, 6)) {
-    return ESP_ERR_INVALID_CRC;
-  }
+    unsigned short crc = (((int)buf[7]) << 8) + ((int)buf[6]);
+    if (crc != crc16(buf, 6)) {
+      ESP_LOGD(TAG, "%s(%d): Invalid CRC", __FUNCTION__, __LINE__);
+      continue;
+    }
 
-  float humidity = (((int)buf[2]) << 8) + buf[3];
-  humidity /= 10;
-  float temperature = (((int)buf[4]) << 8) + buf[5];
-  temperature /= 10;
-  out->temperature = temperature;
-  out->relative_humidity = humidity;
-  return ESP_OK;
+    float humidity = (((int)buf[2]) << 8) + buf[3];
+    humidity /= 10;
+    float temperature = (((int)buf[4]) << 8) + buf[5];
+    temperature /= 10;
+    out->temperature = temperature;
+    out->relative_humidity = humidity;
+    return ESP_OK;
+  }
+  return err;
 }
 
 
@@ -142,8 +155,6 @@ am2320_measure(int i2c_num, int sda, int scl, am2320_measurement *out)
     ESP_LOGE(TAG, "%s(%d): %s", __FUNCTION__, __LINE__, "failed to initialize i2c");
     return err;
   }
-  wakeup(i2c_num);
-  vTaskDelay(10 / portTICK_RATE_MS);
 
   while (try_num_times--) {
     err = perform_measurement(i2c_num, out);
