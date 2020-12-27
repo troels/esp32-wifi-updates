@@ -45,7 +45,7 @@ install_driver(int i2c_num, int sda, int scl)
     .sda_pullup_en = GPIO_PULLUP_ENABLE,
     .scl_io_num = scl,
     .scl_pullup_en = GPIO_PULLUP_ENABLE,
-    .master.clk_speed = 100000U
+    .master.clk_speed = 1000U
   };
   esp_err_t err;
   err = i2c_param_config(i2c_num, &conf);

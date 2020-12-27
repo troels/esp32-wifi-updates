@@ -9,6 +9,7 @@
 
 typedef struct {
   EventGroupHandle_t event_group;
+  SemaphoreHandle_t wifi_semaphore;
 } WifiInfo;
 
 esp_err_t initialize_wifi_with_smartconfig(WifiInfo *wifi_info);

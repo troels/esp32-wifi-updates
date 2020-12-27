@@ -102,13 +102,12 @@ void app_main(void)
       continue;
     }
       
-      
     cJSON_AddStringToObject(resp, "time", strftime_buf);
     char *out = cJSON_Print(resp);
     cJSON_free(resp);
     esp_mqtt_client_publish(mqtt_client, "topic/temperature", out, strlen(out), 1, 0);
     cJSON_free(out);
-    vTaskDelay(pdMS_TO_TICKS(15000));
+    vTaskDelay(pdMS_TO_TICKS(30000));
   }
   
   vTaskSuspend(NULL);
