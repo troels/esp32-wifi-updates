@@ -36,7 +36,7 @@ static void smartconfig_config(void *param)
   while (1) {
     EventBits_t uxBits = xEventGroupWaitBits(wifi_info->event_group,
                                              ESPTOUCH_DONE_BIT | CONNECTED_BIT,
-                                             true, false, portMAX_DELAY);
+                                             pdFALSE, false, portMAX_DELAY);
     if((uxBits & ESPTOUCH_DONE_BIT) || (uxBits & CONNECTED_BIT)) {
       esp_smartconfig_stop();
       ESP_LOGI(TAG, "smartconfig over");
@@ -53,7 +53,8 @@ try_to_initialize_wifi_unless_connected(void *param)
   while (1) {
     vTaskDelay(pdMS_TO_TICKS(60000));
     EventBits_t uxBits = xEventGroupGetBits(wifi_info->event_group);
-    if (uxBits & (1 << CONNECTED_BIT)) {
+    ESP_LOGI(TAG, "Connected bits: %d %d", uxBits, uxBits & CONNECTED_BIT);
+    if (uxBits & CONNECTED_BIT) {
       continue;
     }
 
@@ -64,7 +65,7 @@ try_to_initialize_wifi_unless_connected(void *param)
     }
 
     uxBits = xEventGroupGetBits(wifi_info->event_group);
-    if (!(uxBits & (1 << CONNECTED_BIT))) {
+    if (!(uxBits & CONNECTED_BIT)) {
       esp_err_t err = esp_wifi_connect();
       if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to connect wifi: %s", esp_err_to_name(err));
@@ -82,7 +83,7 @@ esp_err_t wait_for_connection(WifiInfo *wifi_info, TickType_t wait_time)
 {
   EventBits_t uxBits = xEventGroupWaitBits(wifi_info->event_group,
                                            GOT_IP_BIT,
-                                           true, false, wait_time);
+                                           pdFALSE, false, wait_time);
   if(uxBits & GOT_IP_BIT) {
     return ESP_OK;
   }

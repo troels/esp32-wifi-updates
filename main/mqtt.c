@@ -22,7 +22,7 @@ esp_err_t create_mqtt_client(char *broker_url, esp_mqtt_client_handle_t *client)
     .client_key_pem = (char*)mqtt_client_key_start,
     .client_key_len = mqtt_client_key_end - mqtt_client_key_start,
     .keepalive = 30000,
-    .disable_auto-reconnect = 0
+    .disable_auto_reconnect = 0
   };
   
   *client = esp_mqtt_client_init(&mqtt_cfg);
