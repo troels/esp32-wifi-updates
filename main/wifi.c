@@ -5,45 +5,117 @@
 #include "esp_netif.h"
 #include "nvs_flash.h"
 #include "esp_wifi.h"
+#include "mdns.h"
+#include "wifi_provisioning/manager.h"
+#include <wifi_provisioning/scheme_ble.h>
 
 
 static const char *TAG = "Wifi";
+static const char *SERVICE_NAME = "temperature_humidifier_1";
+static const char *SERVICE_KEY  = "secret_secret_ever_secret";
+static const char *POP_SECRET = "POP_SECRET";
 
 static const int CONNECTED_BIT = BIT0;
-static const int ESPTOUCH_DONE_BIT = BIT1;
+static const int PROVISIONING_ACTIVE = BIT1;
 static const int GOT_IP_BIT = BIT2;
+static const int RERUN_PROVISIONING_BIT = BIT4;
 
-static void smartconfig_config(void *param)
+static esp_err_t
+reset_ssid() {
+  wifi_config_t wifi_cfg;
+  esp_err_t err;
+  
+  err = esp_wifi_set_storage(WIFI_STORAGE_FLASH);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to set wifi storage: %s", esp_err_to_name(err));
+    return err;
+  }
+
+  
+  err = esp_wifi_get_config(ESP_IF_WIFI_STA, &wifi_cfg);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to get wifi config: %s", esp_err_to_name(err));
+    return err;
+  }
+
+  wifi_cfg.sta.ssid[0] = '\0';
+
+  err = esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_cfg);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to get wifi config: %s", esp_err_to_name(err));
+    return err;
+  }
+  
+  return ESP_OK;
+}
+
+static void
+wifi_provisioning(void *param)
 {
   WifiInfo *wifi_info = (WifiInfo*)param;
   esp_err_t  err;
-  
-  err = esp_smartconfig_set_type(SC_TYPE_ESPTOUCH);
+  wifi_prov_mgr_config_t config = {
+    .scheme = wifi_prov_scheme_ble,
+    .scheme_event_handler = WIFI_PROV_SCHEME_BLE_EVENT_HANDLER_FREE_BTDM,
+    .app_event_handler = WIFI_PROV_EVENT_HANDLER_NONE
+  };
+
+ restart:
+
+  err = wifi_prov_mgr_init(config);
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to set smartconfig type: %s", esp_err_to_name(err));
-    vTaskDelete(NULL);
-    return;
+    ESP_LOGE(TAG, "Failed to initialize wifi provisioning: %s", esp_err_to_name(err));
+    goto end;
   }
   
-  smartconfig_start_config_t cfg = SMARTCONFIG_START_CONFIG_DEFAULT();
-  err = esp_smartconfig_start(&cfg);
+  
+  err = wifi_prov_mgr_start_provisioning(WIFI_PROV_SECURITY_1,
+                                         POP_SECRET,
+                                         SERVICE_NAME,
+                                         SERVICE_KEY);
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to configure smartconfig: %s", esp_err_to_name(err));
+    ESP_LOGE(TAG, "Failed to initialize wifi provisioning: %s", esp_err_to_name(err));
+    goto end;
+  }
+  
+  while (1) {
+    EventBits_t uxBits = xEventGroupWaitBits(wifi_info->event_group,
+                                             CONNECTED_BIT | RERUN_PROVISIONING_BIT,
+                                             pdFALSE, false, portMAX_DELAY);
+    if (uxBits & RERUN_PROVISIONING_BIT) {
+      wifi_prov_mgr_deinit();
+      reset_ssid();
+      xEventGroupClearBits(wifi_info->event_group, RERUN_PROVISIONING_BIT);
+      goto restart;
+    } else if(uxBits & CONNECTED_BIT) {
+      wifi_prov_mgr_deinit();
+      goto end;
+    }
+  }
+  
+ end:
+    xEventGroupClearBits(wifi_info->event_group, PROVISIONING_ACTIVE);
     vTaskDelete(NULL);
+}
+
+static void
+start_wifi_provisioning(WifiInfo *wifi_info) {
+  xSemaphoreTake(wifi_info->wifi_semaphore, portMAX_DELAY);
+  EventBits_t uxBits = xEventGroupGetBits(wifi_info->event_group);
+  if (uxBits & PROVISIONING_ACTIVE) {
+    xSemaphoreGive(wifi_info->wifi_semaphore);
     return;
   }
 
-  while (1) {
-    EventBits_t uxBits = xEventGroupWaitBits(wifi_info->event_group,
-                                             ESPTOUCH_DONE_BIT | CONNECTED_BIT,
-                                             pdFALSE, false, portMAX_DELAY);
-    if((uxBits & ESPTOUCH_DONE_BIT) || (uxBits & CONNECTED_BIT)) {
-      esp_smartconfig_stop();
-      ESP_LOGI(TAG, "smartconfig over");
-      vTaskDelete(NULL);
-      return;
-    }
+  ESP_LOGI(TAG, "Starting provisioning");
+  xEventGroupSetBits(wifi_info->event_group, PROVISIONING_ACTIVE);
+  BaseType_t err = xTaskCreate(wifi_provisioning, "wifi_provisioning",
+                               4096, wifi_info, 2, NULL);
+
+  if (err != pdPASS) {
+    ESP_LOGE(TAG, "Failed to start wifi_provisioning");
   }
+  xSemaphoreGive(wifi_info->wifi_semaphore);
 }
 
 static void
@@ -53,29 +125,11 @@ try_to_initialize_wifi_unless_connected(void *param)
   while (1) {
     vTaskDelay(pdMS_TO_TICKS(60000));
     EventBits_t uxBits = xEventGroupGetBits(wifi_info->event_group);
-    ESP_LOGI(TAG, "Connected bits: %d %d", uxBits, uxBits & CONNECTED_BIT);
     if (uxBits & CONNECTED_BIT) {
       continue;
     }
-
-    BaseType_t sem_take = xSemaphoreTake(wifi_info->wifi_semaphore, portMAX_DELAY);
-    if (sem_take == pdFALSE) {
-      ESP_LOGE(TAG, "Horrible error taking semaphore");
-      continue;
-    }
-
-    uxBits = xEventGroupGetBits(wifi_info->event_group);
-    if (!(uxBits & CONNECTED_BIT)) {
-      esp_err_t err = esp_wifi_connect();
-      if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to connect wifi: %s", esp_err_to_name(err));
-      }
-    }
     
-    BaseType_t sem_give = xSemaphoreGive(wifi_info->wifi_semaphore);
-    if (sem_give == pdFALSE) {
-      ESP_LOGE(TAG, "Horrible error giving semaphore");
-    }
+    start_wifi_provisioning(wifi_info);
   } 
 }
 
@@ -95,96 +149,22 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
                                int32_t event_id, void* event_data)
 {
   WifiInfo *wifi_info = (WifiInfo*) arg;
-  esp_err_t err;
   
-  if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-    BaseType_t rtos_err = xTaskCreate(smartconfig_config, "smartconfig_config",
-                                      4096, wifi_info, 3, NULL);
-    if (rtos_err != pdPASS) {
-      ESP_LOGE(TAG, "Failed to create smartconfig_config task");
-      return;
-    }
+  if (event_base == WIFI_PROV_EVENT && event_id == WIFI_PROV_CRED_FAIL) {
+    xEventGroupClearBits(wifi_info->event_group, CONNECTED_BIT | GOT_IP_BIT);
+    xEventGroupSetBits(wifi_info->event_group, RERUN_PROVISIONING_BIT);
   } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-    xEventGroupClearBits(wifi_info->event_group, CONNECTED_BIT);
-    xEventGroupClearBits(wifi_info->event_group, GOT_IP_BIT);
-    xEventGroupClearBits(wifi_info->event_group, ESPTOUCH_DONE_BIT);
-
-    // Restart smartconfig
-    BaseType_t rtos_err = xTaskCreate(smartconfig_config, "smartconfig_config",
-                                      4096, wifi_info, 3, NULL);
-    if (rtos_err != pdPASS) {
-      ESP_LOGE(TAG, "Failed to create smartconfig_config task");
-      return;
-    }
-    
-    BaseType_t got_semaphore = xSemaphoreTake(wifi_info->wifi_semaphore, portMAX_DELAY);
-    if (got_semaphore == pdFALSE) {
-      ESP_LOGE(TAG, "Failed to wait for semaphore");
-      abort();
-    }
-
-    err = esp_wifi_connect();
-    BaseType_t sem_res = xSemaphoreGive(wifi_info->wifi_semaphore);
-    if (sem_res == pdFALSE) {
-      ESP_LOGE(TAG, "Failed to give semaphore");
-    }
-
-    if (err != ESP_OK) {
-      ESP_LOGE(TAG, "Failed to connect to wifi: %s", esp_err_to_name(err));
-      return;
-    }
+    xEventGroupClearBits(wifi_info->event_group, CONNECTED_BIT | GOT_IP_BIT);
+    start_wifi_provisioning(wifi_info);
   } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
     xEventGroupSetBits(wifi_info->event_group, CONNECTED_BIT);
   } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
     xEventGroupSetBits(wifi_info->event_group, GOT_IP_BIT);
-  } else if (event_base == SC_EVENT && event_id == SC_EVENT_GOT_SSID_PSWD) {
-    BaseType_t got_semaphore = xSemaphoreTake(wifi_info->wifi_semaphore, portMAX_DELAY);
-    if (got_semaphore == pdFALSE) {
-      ESP_LOGE(TAG, "Failed to wait for semaphore");
-      abort();
-    }
-                                   
-    smartconfig_event_got_ssid_pswd_t *evt = (smartconfig_event_got_ssid_pswd_t *)event_data;
-    wifi_config_t wifi_config = {0};
-
-    memcpy(wifi_config.sta.ssid, evt->ssid, sizeof(wifi_config.sta.ssid));
-    memcpy(wifi_config.sta.password, evt->password, sizeof(wifi_config.sta.password));
-    wifi_config.sta.bssid_set = evt->bssid_set;
-    if (wifi_config.sta.bssid_set) {
-      memcpy(wifi_config.sta.bssid, evt->bssid, sizeof(wifi_config.sta.bssid));
-    }
-
-    err = esp_wifi_disconnect();
-    if (err != ESP_OK) {
-      ESP_LOGE(TAG, "Failed to disconnect from wifi: %s", esp_err_to_name(err));
-    }
-    
-    err = esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config);
-    if (err != ESP_OK) {
-      ESP_LOGE(TAG, "Failed to configure wifi: %s", esp_err_to_name(err));
-      BaseType_t sem_res = xSemaphoreGive(wifi_info->wifi_semaphore);
-      if (sem_res == pdFALSE) {
-        ESP_LOGE(TAG, "Failed to give semaphore");
-      }
-      return;
-    }
-    
-    err = esp_wifi_connect();
-    if (err != ESP_OK) {
-      ESP_LOGE(TAG, "Failed to connect wifi: %s", esp_err_to_name(err));
-    }
-    
-    BaseType_t sem_res = xSemaphoreGive(wifi_info->wifi_semaphore);
-    if (sem_res == pdFALSE) {
-      ESP_LOGE(TAG, "Failed to give semaphore");
-    }
-  } else if (event_base == SC_EVENT && event_id == SC_EVENT_SEND_ACK_DONE) {
-    xEventGroupSetBits(wifi_info->event_group, ESPTOUCH_DONE_BIT);
   }
 }
 
 
-esp_err_t initialize_wifi_with_smartconfig(WifiInfo *wifi_info)
+esp_err_t initialize_wifi_with_provisioning(WifiInfo *wifi_info)
 {
   esp_err_t err = ESP_OK; 
   
@@ -199,17 +179,35 @@ esp_err_t initialize_wifi_with_smartconfig(WifiInfo *wifi_info)
     ESP_LOGE(TAG,"Error creating wifi semaphore");
     goto cleanup;
   }
-    
+  xSemaphoreGive(wifi_info->wifi_semaphore);
+
   err = nvs_flash_init();
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed to initialize nvs flash: %s", esp_err_to_name(err));
     return err;
   }
 
+  err = mdns_init();
+  if (err) {
+    ESP_LOGE(TAG, "Failed to initialize mDNS: %s", esp_err_to_name(err));
+    goto cleanup;
+  }
+
+  err = mdns_hostname_set("temperature_sensor");
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to set mDNS hostname: %s", esp_err_to_name(err));
+    goto cleanup;
+  }
+  err = mdns_instance_name_set("Temperature Sensor");
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to set mDNS hostname: %s", esp_err_to_name(err));
+    goto cleanup;
+  }
+
   err = esp_netif_init();
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed to initialize netif: %s", esp_err_to_name(err));
-    return err;
+    goto cleanup;
   }
 
   esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
@@ -240,37 +238,27 @@ esp_err_t initialize_wifi_with_smartconfig(WifiInfo *wifi_info)
     goto cleanup;
   }
 
-  err = esp_event_handler_register(SC_EVENT, ESP_EVENT_ANY_ID,
+  err = esp_event_handler_register(WIFI_PROV_EVENT, ESP_EVENT_ANY_ID,
                                    &wifi_event_handler, wifi_info);
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to register smartconfig handler: %s", esp_err_to_name(err));
+    ESP_LOGE(TAG, "Failed to register provisioning handler: %s", esp_err_to_name(err));
     goto cleanup;
   }
 
-  err = esp_wifi_set_mode(WIFI_MODE_STA);
-  if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to initialize WIFI: %s", esp_err_to_name(err));
-    goto cleanup;
-  }
-
-  ESP_LOGI(TAG, "Starting wifi");
-  err = esp_wifi_start();
-  if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to start WIFI: %s", esp_err_to_name(err));
-    goto cleanup;
-  }
-
+  ESP_LOGI(TAG, "Starting wifi provisioning");
+  start_wifi_provisioning(wifi_info);
   BaseType_t rtos_err = xTaskCreate(try_to_initialize_wifi_unless_connected, "maintain_wifi",
                                     4096, wifi_info, 1, NULL);
   if (rtos_err != pdPASS) {
     ESP_LOGE(TAG, "Failed to start wifi maintenance task");
   }
 
-  xSemaphoreGive(wifi_info->wifi_semaphore);
+
   return ESP_OK;
   
  cleanup:
-  
+
+  ESP_LOGI(TAG, "Went to cleanup");
   if (wifi_info->event_group != NULL) {
     ESP_LOGI(TAG, "Deleting event group");
     vEventGroupDelete(wifi_info->event_group);

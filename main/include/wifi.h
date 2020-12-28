@@ -12,7 +12,7 @@ typedef struct {
   SemaphoreHandle_t wifi_semaphore;
 } WifiInfo;
 
-esp_err_t initialize_wifi_with_smartconfig(WifiInfo *wifi_info);
+esp_err_t initialize_wifi_with_provisioning(WifiInfo *wifi_info);
 esp_err_t wait_for_connection(WifiInfo *info, TickType_t wait_time);
   
 #endif

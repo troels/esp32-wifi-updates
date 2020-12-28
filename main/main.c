@@ -41,7 +41,7 @@ void app_main(void)
     return;
   }
   
-  err = initialize_wifi_with_smartconfig(&wifi_info);
+  err = initialize_wifi_with_provisioning(&wifi_info);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed to initialize wifi with smartconfig: %s", esp_err_to_name(err));
     return;
