@@ -7,7 +7,8 @@
 #include "esp_wifi.h"
 #include "mdns.h"
 #include "wifi_provisioning/manager.h"
-#include <wifi_provisioning/scheme_ble.h>
+#include "wifi_provisioning/scheme_ble.h"
+#include "esp_wifi_types.h"
 
 
 static const char *TAG = "Wifi";
@@ -56,12 +57,17 @@ wifi_provisioning(void *param)
   esp_err_t  err;
   wifi_prov_mgr_config_t config = {
     .scheme = wifi_prov_scheme_ble,
-    .scheme_event_handler = WIFI_PROV_SCHEME_BLE_EVENT_HANDLER_FREE_BTDM,
-    .app_event_handler = WIFI_PROV_EVENT_HANDLER_NONE
+    .scheme_event_handler = WIFI_PROV_EVENT_HANDLER_NONE,
+    .app_event_handler = WIFI_PROV_SCHEME_BLE_EVENT_HANDLER_FREE_BTDM
   };
-
+  EventBits_t uxBits;
  restart:
-
+  uxBits = xEventGroupGetBits(wifi_info->event_group);
+  if (uxBits & RERUN_PROVISIONING_BIT) {
+    reset_ssid();
+    xEventGroupClearBits(wifi_info->event_group, RERUN_PROVISIONING_BIT);
+  }
+  
   err = wifi_prov_mgr_init(config);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed to initialize wifi provisioning: %s", esp_err_to_name(err));
@@ -79,16 +85,14 @@ wifi_provisioning(void *param)
   }
   
   while (1) {
-    EventBits_t uxBits = xEventGroupWaitBits(wifi_info->event_group,
+    uxBits = xEventGroupWaitBits(wifi_info->event_group,
                                              CONNECTED_BIT | RERUN_PROVISIONING_BIT,
                                              pdFALSE, false, portMAX_DELAY);
     if (uxBits & RERUN_PROVISIONING_BIT) {
-      wifi_prov_mgr_deinit();
       reset_ssid();
-      xEventGroupClearBits(wifi_info->event_group, RERUN_PROVISIONING_BIT);
+      esp_restart();
       goto restart;
     } else if(uxBits & CONNECTED_BIT) {
-      wifi_prov_mgr_deinit();
       goto end;
     }
   }
@@ -128,8 +132,8 @@ try_to_initialize_wifi_unless_connected(void *param)
     if (uxBits & CONNECTED_BIT) {
       continue;
     }
-    
-    start_wifi_provisioning(wifi_info);
+
+    esp_wifi_connect();
   } 
 }
 
@@ -152,10 +156,15 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
   
   if (event_base == WIFI_PROV_EVENT && event_id == WIFI_PROV_CRED_FAIL) {
     xEventGroupClearBits(wifi_info->event_group, CONNECTED_BIT | GOT_IP_BIT);
-    xEventGroupSetBits(wifi_info->event_group, RERUN_PROVISIONING_BIT);
+    wifi_err_reason_t *reason = (void*)event_data;
+    if (*reason == WIFI_REASON_AUTH_FAIL) {
+      xEventGroupSetBits(wifi_info->event_group, RERUN_PROVISIONING_BIT);
+      start_wifi_provisioning(wifi_info);
+    } else {
+      esp_wifi_connect();
+    }
   } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
     xEventGroupClearBits(wifi_info->event_group, CONNECTED_BIT | GOT_IP_BIT);
-    start_wifi_provisioning(wifi_info);
   } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
     xEventGroupSetBits(wifi_info->event_group, CONNECTED_BIT);
   } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {

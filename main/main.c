@@ -76,6 +76,7 @@ void app_main(void)
   esp_wifi_set_ps(WIFI_PS_MAX_MODEM);
   
   while (1) {
+    wait_for_connection(&wifi_info, portMAX_DELAY);
     am2320_measurement measurement;
     err = am2320_measure(I2C_NUM_0, GPIO_NUM_21, GPIO_NUM_22, &measurement);
     if (err != ESP_OK) {
